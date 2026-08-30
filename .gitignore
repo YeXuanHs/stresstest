@@ -1,0 +1,12 @@
+stresstest
+stresstest.exe
+*.exe
+*.test
+*.out
+.env
+web/
+cmd/
+修改版/
+*.py
+*.pyc
+

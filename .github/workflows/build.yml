@@ -26,24 +26,12 @@ jobs:
       - name: Build Linux arm64
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o stresstest-linux-arm64 .
 
-      - name: Build Windows amd64
-        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o stresstest-windows-amd64.exe .
-
-      - name: Build macOS amd64
-        run: CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o stresstest-darwin-amd64 .
-
-      - name: Build macOS arm64
-        run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o stresstest-darwin-arm64 .
-
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             stresstest-linux-amd64
             stresstest-linux-arm64
-            stresstest-windows-amd64.exe
-            stresstest-darwin-amd64
-            stresstest-darwin-arm64
           draft: false
           prerelease: false
         env:
