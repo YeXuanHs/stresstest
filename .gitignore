@@ -6,18 +6,7 @@ stresstest.exe
 .env
 web/
 cmd/
-build_*.py
-deploy_*.py
-check_*.py
-fix_*.py
-clear_*.py
-install_*.py
-cleanup*.py
-restart_*.py
-test_*.py
-reboot_*.py
-debug_*.py
-analyze_*.py
-setup_*.py
-find_*.py
+修改版/
+*.py
+*.pyc
 
