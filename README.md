@@ -1,84 +1,75 @@
 # stresstest 多协议压力测试工具
 
-支持 TCP / UDP / HTTP / Minecraft / Flood / ICMP 的高并发压测工具，提供 Web 管理界面，支持分布式多机压测。
+支持 TCP / UDP / HTTP / Minecraft / Flood / ICMP 的高并发压测工具，支持分布式多机压测。
 
 ## 功能特性
 
 - 多协议支持：TCP / UDP / HTTP / Minecraft / Flood / ICMP
-- Web 管理界面：可视化操作，无需命令行
 - 分布式架构：主控 + 被控模式，支持多机同时发压
-- 实时统计：200ms 刷新间隔，实时查看吞吐、包速率、错误数
-- 密码保护：主控面板和 Agent 连接均需密码验证
+- CLI 交互菜单：实时监控、任务下发、停止控制
+- 实时统计：500ms 刷新间隔，查看吞吐、包速率、错误数
+- 密码保护：Agent 连接需密码验证
 
 ## 架构说明
 
 | 角色 | 说明 |
 |------|------|
-| **主控 (master)** | 管理被控，下发任务，不参与发包 |
+| **主控 (master)** | 管理被控，下发任务，CLI 菜单操作 |
 | **被控 (agent)** | 连接主控，执行发包任务 |
 | **主控+被控 (both)** | 管理被控，自己也参与发包 |
 
-## 编译
-
-### 前端构建
+## 快速开始
 
 ```bash
-cd web
-npm install
-npm run build
-cd ..
+# 下载（从 GitHub Releases）
+# 或自行编译
+go build -o stresstest .
+
+# 首次运行（自动进入主控+被控模式）
+./stresstest
+
+# 或指定模式
+./stresstest master    # 仅主控
+./stresstest agent     # 仅被控
+./stresstest both      # 主控+被控
 ```
 
-### Go 构建
+## CLI 菜单
 
-```bash
-# Linux
-GOOS=linux GOARCH=amd64 go build -o stresstest .
-
-# Windows
-go build -o stresstest.exe .
-```
-
-构建后只有一个可执行文件，前端已嵌入其中。
-
-## 使用方式
-
-### 1. 主控模式
-
-```bash
-./stresstest master
-```
-
-首次运行会询问面板端口，然后启动 Web 服务：
+手动运行 `./stresstest master` 或 `./stresstest both` 进入交互式菜单：
 
 ```
-┌─────────────────────────────────────────────┐
-│  主控已启动                                   │
-│                                             │
-│  面板地址: http://0.0.0.0:8443               │
-│  被控连接地址: 0.0.0.0:8443                  │
-└─────────────────────────────────────────────┘
+╔══════════════════════════════════════════╗
+║         压力测试工具 - 控制面板           ║
+╠══════════════════════════════════════════╣
+║  [1] 查看 Agent 列表                     ║
+║  [2] 实时监控（单台）                     ║
+║  [3] 实时监控（总量）                     ║
+║  [4] 下发任务                            ║
+║  [5] 停止任务                            ║
+║  [0] 退出                                ║
+╚══════════════════════════════════════════╝
 ```
 
-浏览器访问面板，首次使用会引导设置密码。
+### 实时监控
 
-### 2. 被控模式
+选择一台 Agent 后，每 500ms 刷新显示：
 
-```bash
-./stresstest agent
+```
+=== 实时监控: 甲骨文G口1 ===
+吞吐: 1.23 MB/s (0.001 GB/s)
+包速率: 950 pkt/s
+累计错误: 0
+运行时间: 5m30s
+
+按 Enter 返回菜单...
 ```
 
-首次运行会询问面板端口，然后启动 Web 服务。浏览器访问面板，填写主控 IP、端口和密码进行连接。
+### systemd 模式
 
-### 3. 主控+被控模式
+以服务方式运行时（`./stresstest run --port 8443`），自动检测无终端，仅运行 WebSocket 服务器，不启动 CLI 菜单。
 
-```bash
-./stresstest both
-```
-
-同时作为主控和被控，本机也参与发包。
-
-### 4. 单机模式（无需主控）
+## 单机模式参数
 
 ```bash
 # TCP 压测
@@ -89,25 +80,21 @@ go build -o stresstest.exe .
 
 # HTTP 压测
 ./stresstest -mode http -target http://192.168.1.100:8080/upload -workers 32 -duration 60s
+
+# Minecraft - 200个玩家登录挂机
+./stresstest -mode mc -mc-action login -target 10.0.0.5:25565 -workers 200
+
+# Flood TCP - 打满pps
+./stresstest -mode flood -target 10.0.0.5:9000 -workers 128 -flood-size 64
+
+# Flood UDP - sendmmsg批量发送
+./stresstest -mode flood -flood-proto udp -target 10.0.0.5:9000 -workers 128 -flood-batch 64
+
+# ICMP ping flood
+./stresstest -mode icmp -target 10.0.0.5 -workers 64
 ```
 
-## Web 管理界面
-
-### 主控面板功能
-
-- 在线 Agent 列表（支持全选/反选）
-- 任务配置（模式、目标、并发数、包大小、时长）
-- 实时统计（总吞吐、包速率、错误数）
-- 修改 Agent 名称
-- 修改密码
-- 修改端口（自动重启）
-
-### 被控面板功能
-
-- 查看连接状态
-- 修改主控连接配置（IP、端口、密码）
-
-## 单机模式参数
+### 通用参数
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
@@ -119,15 +106,6 @@ go build -o stresstest.exe .
 | `-duration` | 运行时长，0为持续 | 0 |
 | `-stats` | 统计间隔 | 1s |
 
-### Minecraft 模式参数
-
-| 参数 | 说明 | 默认值 |
-|---|---|---|
-| `-mc-action` | login / status | login |
-| `-mc-protocol` | 协议版本号 | 763 |
-| `-mc-username-prefix` | 用户名前缀 | stress |
-| `-mc-keepalive` | 是否保活 | true |
-
 ### Flood 模式参数
 
 | 参数 | 说明 | 默认值 |
@@ -136,39 +114,46 @@ go build -o stresstest.exe .
 | `-flood-proto` | tcp / udp / http | tcp |
 | `-flood-nodelay` | 关闭Nagle | true |
 | `-flood-churn` | 每次重新建连 | false |
+| `-flood-batch` | UDP sendmmsg批量数 | 64 |
 
-## 压测示例
+### ICMP 模式参数
 
-### 单机压测
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `-icmp-size` | ICMP payload大小 | 56 |
+| `-icmp-rate-pps` | 限速 pps，0不限速 | 0 |
+| `-icmp-timeout` | Reply超时 | 2s |
 
-```bash
-# TCP，64并发，64KB包
-./stresstest -mode tcp -target 10.0.0.5:9000 -workers 64 -size 65536
+### Minecraft 模式参数
 
-# UDP，128并发，1400字节包
-./stresstest -mode udp -target 10.0.0.5:9001 -workers 128 -size 1400
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `-mc-action` | login / status | login |
+| `-mc-protocol` | 协议版本号 | 763 |
+| `-mc-username-prefix` | 用户名前缀 | stress |
+| `-mc-keepalive` | 是否保活 | true |
+| `-mc-reconnect` | 断线重连 | true |
 
-# HTTP，32并发，60秒
-./stresstest -mode http -target http://10.0.0.5:8080/upload -workers 32 -duration 60s
-
-# Minecraft - 200个玩家登录挂机
-./stresstest -mode mc -mc-action login -target 10.0.0.5:25565 -workers 200
-
-# Flood TCP - 打满pps
-./stresstest -mode flood -target 10.0.0.5:9000 -workers 128 -flood-size 64
-```
-
-### 分布式压测
+## 分布式压测
 
 1. 在主控机器运行 `./stresstest both`
-2. 在被控机器运行 `./stresstest agent`
-3. 浏览器访问主控面板，配置任务，选择 Agent，点击开始
+2. 在被控机器配置 `.env` 并运行 `./stresstest agent`
+3. 主控 CLI 菜单中选择「下发任务」，选择 Agent 和参数
+
+### .env 配置（被控）
+
+```env
+MODE=agent
+MASTER_HOST=主控IP
+MASTER_PORT=8443
+MASTER_TOKEN=密码
+AGENT_NAME=自定义名称
+```
 
 ## Minecraft 模式限制
 
 1. 必须关闭正版验证：`online-mode=false`
-2. 必须关闭数据包压缩：`network-compression-threshold=-1`
-3. KeepAlive 包ID是版本相关的，如连接频繁掉线请调整 `-mc-keepalive-serverbound-id`
+2. KeepAlive 包ID是版本相关的，如连接频繁掉线请调整 `-mc-keepalive-serverbound-id`
 
 ## 关于高吞吐
 
@@ -184,3 +169,16 @@ go build -o stresstest.exe .
 
 - 请仅对自己拥有或已获得明确授权的目标进行压测
 - UDP 模式下发送成功不代表对方收到，需在目标端统计
+
+## 编译
+
+```bash
+# Linux amd64
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o stresstest .
+
+# Windows
+GOOS=windows GOARCH=amd64 go build -o stresstest.exe .
+
+# macOS
+GOOS=darwin GOARCH=arm64 go build -o stresstest .
+```
