@@ -665,48 +665,13 @@ func runService() {
 		server.config.Port = "8443"
 	}
 
-	// 获取真实 IP
-	localIP := getLocalIP()
 	addr := "0.0.0.0:" + server.config.Port
-	webAddr := localIP + ":" + server.config.Port
 
-	// 如果 MODE 为空（首次安装），启动 Web 服务让用户选择模式
+	// 如果 MODE 为空（首次安装），默认 both 模式
 	if server.config.Mode == "" {
-		log.Printf("请先前往面板选择运行模式: http://%s", webAddr)
-		// 注册本地 Agent（默认 both 模式）
-		hostname, _ := os.Hostname()
-		localName := hostname + " (本机)"
-		if server.config.AgentName != "" {
-			localName = server.config.AgentName
-		}
-		localAgent := &AgentInfo{
-			ID:       "local",
-			Name:     localName,
-			Selected: true,
-			Order:    0,
-			LastSeen: time.Now(),
-			CPU:      runtime.NumCPU(),
-		}
-		server.agents["local"] = localAgent
-		
-		// 定期更新本地 Agent 状态
-		go func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for range ticker.C {
-				server.agentsMu.Lock()
-				if agent, ok := server.agents["local"]; ok {
-					agent.LastSeen = time.Now()
-					agent.CPU = runtime.NumCPU()
-				}
-				server.agentsMu.Unlock()
-			}
-		}()
-
-		if err := server.Start(addr); err != nil {
-			log.Fatalf("启动服务器失败: %v", err)
-		}
-		return
+		log.Printf("首次运行，默认以主控+被控模式启动")
+		server.config.Mode = "both"
+		server.SaveEnv()
 	}
 
 	switch server.config.Mode {
@@ -714,10 +679,6 @@ func runService() {
 		log.Printf("主控模式")
 	case "agent":
 		log.Printf("被控模式")
-		// 启动 WebSocket 连接到主控
-		if server.config.AgentMasterHost != "" && server.config.AgentMasterPort != "" {
-			go connectToMaster(server)
-		}
 	case "both":
 		log.Printf("主控+被控模式")
 		// 注册本地 Agent
@@ -735,7 +696,7 @@ func runService() {
 			CPU:      runtime.NumCPU(),
 		}
 		server.agents["local"] = localAgent
-		
+
 		// 定期更新本地 Agent 状态
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
@@ -750,15 +711,27 @@ func runService() {
 			}
 		}()
 	default:
-		log.Printf("请先前往面板选择运行模式: http://%s", webAddr)
-		server.config.Mode = ""
+		log.Printf("未知模式 %s，使用主控+被控模式", server.config.Mode)
+		server.config.Mode = "both"
 		server.SaveEnv()
 	}
 
-	log.Printf("面板地址: http://%s", webAddr)
+	// 启动 WebSocket 服务器（仅 master 和 both 模式需要）
+	if server.config.Mode != "agent" {
+		server.startWSServer(addr)
+	}
 
-	if err := server.Start(addr); err != nil {
-		log.Fatalf("启动服务器失败: %v", err)
+	if server.config.Mode == "agent" {
+		// Agent 模式不需要 CLI 菜单，只需连接主控并等待
+		log.Printf("被控运行中，等待主控下发任务...")
+		if server.config.AgentMasterHost != "" && server.config.AgentMasterPort != "" {
+			connectToMaster(server)
+		} else {
+			log.Fatal("未配置主控地址，请在 .env 中设置 MASTER_HOST 和 MASTER_PORT")
+		}
+	} else {
+		// Master 或 Both 模式运行 CLI 菜单
+		server.cliMenu()
 	}
 }
 
