@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -355,6 +356,17 @@ func runTask(ctx context.Context, cfg TaskConfig) {
 	n := cfg.Workers
 	if n <= 0 {
 		n = runtime.NumCPU() * 4
+	}
+
+	// ICMP 模式需要预先启动 receiver 和 cleanup
+	if cfg.Mode == "icmp" {
+		rfd, rerr := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, 1)
+		if rerr != nil {
+			log.Printf("创建ICMP接收socket失败（需要root权限或CAP_NET_RAW）: %v", rerr)
+			return
+		}
+		go icmpReceiver(ctx, rfd)
+		go icmpCleanup(ctx)
 	}
 
 	for i := 0; i < n; i++ {

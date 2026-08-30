@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -598,6 +599,17 @@ func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, ta
 	lim := newLimiter(0)
 	var wg sync.WaitGroup
 
+	// ICMP 模式需要预先启动 receiver 和 cleanup
+	if taskMode == "icmp" {
+		rfd, rerr := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, 1)
+		if rerr != nil {
+			log.Printf("创建ICMP接收socket失败（需要root权限或CAP_NET_RAW）: %v", rerr)
+			return
+		}
+		go icmpReceiver(ctx, rfd)
+		go icmpCleanup(ctx)
+	}
+
 	go connectionCleaner(ctx)
 
 	go func() {
@@ -652,6 +664,22 @@ func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, ta
 			go udpWorker(ctx, &wg, i, lim)
 		case "http":
 			go httpWorker(ctx, &wg, i, lim)
+		case "mc":
+			go mcWorker(ctx, &wg, i)
+		case "flood":
+			if *floodProto == "udp" {
+				if !*floodChurn && *floodBatch > 1 {
+					go udpFloodBatchWorker(ctx, &wg, i, *floodBatch)
+				} else {
+					go udpFloodWorker(ctx, &wg, i)
+				}
+			} else if *floodProto == "http" {
+				go httpFloodWorker(ctx, &wg, i)
+			} else {
+				go floodWorker(ctx, &wg, i)
+			}
+		case "icmp":
+			go icmpWorker(ctx, &wg, i)
 		default:
 			wg.Done()
 		}
@@ -817,6 +845,17 @@ func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, t
 	lim := newLimiter(0)
 	var wg sync.WaitGroup
 
+	// ICMP 模式需要预先启动 receiver 和 cleanup
+	if taskMode == "icmp" {
+		rfd, rerr := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, 1)
+		if rerr != nil {
+			log.Printf("创建ICMP接收socket失败（需要root权限或CAP_NET_RAW）: %v", rerr)
+			return
+		}
+		go icmpReceiver(ctx, rfd)
+		go icmpCleanup(ctx)
+	}
+
 	go connectionCleaner(ctx)
 
 	go func() {
@@ -873,6 +912,22 @@ func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, t
 			go udpWorker(ctx, &wg, i, lim)
 		case "http":
 			go httpWorker(ctx, &wg, i, lim)
+		case "mc":
+			go mcWorker(ctx, &wg, i)
+		case "flood":
+			if *floodProto == "udp" {
+				if !*floodChurn && *floodBatch > 1 {
+					go udpFloodBatchWorker(ctx, &wg, i, *floodBatch)
+				} else {
+					go udpFloodWorker(ctx, &wg, i)
+				}
+			} else if *floodProto == "http" {
+				go httpFloodWorker(ctx, &wg, i)
+			} else {
+				go floodWorker(ctx, &wg, i)
+			}
+		case "icmp":
+			go icmpWorker(ctx, &wg, i)
 		default:
 			wg.Done()
 		}
