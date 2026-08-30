@@ -1,0 +1,8 @@
+stresstest
+*.exe
+*.test
+*.out
+.env
+web/node_modules
+web/dist
+cmd/
