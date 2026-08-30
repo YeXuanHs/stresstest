@@ -730,8 +730,15 @@ func runService() {
 			log.Fatal("未配置主控地址，请在 .env 中设置 MASTER_HOST 和 MASTER_PORT")
 		}
 	} else {
-		// Master 或 Both 模式运行 CLI 菜单
-		server.cliMenu()
+		// Master 或 Both 模式
+		// 检测是否有终端，有则启动 CLI 菜单，否则只运行 WS 服务器（systemd 模式）
+		if isTerminal() {
+			server.cliMenu()
+		} else {
+			log.Printf("无终端模式，仅运行 WebSocket 服务器")
+			// 阻塞等待
+			select {}
+		}
 	}
 }
 
@@ -750,4 +757,13 @@ func checkAndRunAgent() bool {
 	}()
 	runAgent()
 	return true
+}
+
+// isTerminal 检测 stdin 是否是终端
+func isTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
