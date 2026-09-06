@@ -41,6 +41,7 @@ var envFile = getEnvFilePath()
 type EnvConfig struct {
 	Port             string `json:"port"`
 	Mode             string `json:"mode"` // master / agent / both
+	AgentID          string `json:"agent_id"`
 	PasswordHash     string `json:"password_hash"`
 	AgentMasterHost  string `json:"agent_master_host"`
 	AgentMasterPort  string `json:"agent_master_port"`
@@ -157,6 +158,8 @@ func (s *MasterServer) LoadEnv() error {
 			s.config.Port = value
 		case "MODE":
 			s.config.Mode = value
+		case "AGENT_ID":
+			s.config.AgentID = value
 		case "MASTER_PASSWORD_HASH":
 			s.config.PasswordHash = value
 		case "MASTER_HOST":
@@ -189,6 +192,10 @@ func (s *MasterServer) SaveEnv() error {
 	lines = append(lines, "# 压力测试工具配置文件")
 	lines = append(lines, fmt.Sprintf("PORT=%s", s.config.Port))
 	lines = append(lines, fmt.Sprintf("MODE=%s", s.config.Mode))
+
+	if s.config.AgentID != "" {
+		lines = append(lines, fmt.Sprintf("AGENT_ID=%s", s.config.AgentID))
+	}
 
 	if s.config.PasswordHash != "" {
 		lines = append(lines, fmt.Sprintf("MASTER_PASSWORD_HASH=%s", s.config.PasswordHash))
@@ -367,10 +374,15 @@ func (s *MasterServer) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if idx := strings.LastIndex(regMsg.AgentID, "-"); idx > 0 {
 			hostname = regMsg.AgentID[:idx]
 		}
+		// 已注册过的固定 id 保留原排序，避免重连后乱序
+		order := maxOrder + 1
+		if prev, ok := s.config.RegisteredAgents[regMsg.AgentID]; ok {
+			order = prev.Order
+		}
 		s.config.RegisteredAgents[regMsg.AgentID] = RegisteredAgent{
 			Hostname: hostname,
 			Name:     regMsg.Name,
-			Order:    maxOrder + 1,
+			Order:    order,
 		}
 		s.SaveEnv()
 	}
@@ -703,6 +715,10 @@ func connectToMaster(server *MasterServer) {
 		agentName = hostname
 	}
 	agentID := hostname
+	// 优先使用 .env 中配置的固定 AGENT_ID，保证 id 稳定不重复注册
+	if server.config.AgentID != "" {
+		agentID = server.config.AgentID
+	}
 
 	for {
 		err := runAgentConnection(server, masterURL, agentID, agentName, server.config.AgentMasterToken)
