@@ -40,6 +40,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,21 +126,24 @@ func (l *limiter) wait(n int) {
 	}
 }
 
-// ---------- 连接清理器：定期清理废弃连接 ----------
-func connectionCleaner(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Linux: 清理 CLOSE_WAIT 和 TIME_WAIT 连接
-			if runtime.GOOS == "linux" {
-				exec.Command("ss", "-K").Run()
-			}
-		}
+// ---------- 单实例锁：避免重复启动多个进程 ----------
+// lockInstance 使用 flock 独占锁定 lockPath。
+// 若已有进程持有锁，返回 false；成功持有则返回 true。
+func lockInstance(lockPath string) bool {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		// 无权创建锁文件时不阻断运行
+		return true
 	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return false
+	}
+	// 记录 PID，便于排查
+	f.Truncate(0)
+	f.WriteAt([]byte(strconv.Itoa(os.Getpid())), 0)
+	// 故意不 Close：文件描述符保持打开，进程退出时锁自动释放
+	return true
 }
 
 // ---------- TCP worker ----------
@@ -355,6 +359,31 @@ const asciiBanner = `
 `
 
 func main() {
+	// 单实例保护：已有进程在跑时，直接退出而不是重复启动
+	// 命令行压测模式(-mode)与 service 安装/卸载不参与加锁
+	args := os.Args[1:]
+	isDaemonLike := len(args) == 0
+	if len(args) > 0 {
+		switch args[0] {
+		case "master", "agent", "both", "run", "uninstall", "status":
+			isDaemonLike = true
+		default:
+			for _, a := range args {
+				if a == "-mode" || strings.HasPrefix(a, "-mode=") {
+					isDaemonLike = false
+					break
+				}
+			}
+		}
+	}
+	if isDaemonLike {
+		lockPath := filepath.Join(filepath.Dir(getEnvFilePath()), ".stresstest.lock")
+		if !lockInstance(lockPath) {
+			fmt.Fprintln(os.Stderr, "已有 stresstest 实例在运行，本次启动已取消")
+			os.Exit(0)
+		}
+	}
+
 	// 检查子命令
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -486,7 +515,6 @@ func runCommandLine() {
 	}
 
 	go statsReporter(ctx)
-	go connectionCleaner(ctx)
 
 	var wg sync.WaitGroup
 	for i := 0; i < *workers; i++ {
@@ -553,6 +581,7 @@ const serviceName = "stresstest"
 const serviceFile = "/etc/systemd/system/" + serviceName + ".service"
 
 // getServiceTemplate 生成 systemd service 文件内容
+// 包含日志限速，避免高频日志把磁盘写满。
 func getServiceTemplate(binPath, port string) string {
 	return fmt.Sprintf(`[Unit]
 Description=StressTest - 多协议压力测试工具
@@ -561,12 +590,32 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%s run --port %s
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=10
+
+# 日志限速：30 秒内最多 200 条，超出则丢弃，防止刷屏写满磁盘
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stresstest
+
+# 文件描述符上限
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
 `, binPath, port)
+}
+
+// journaldDropIn 生成 journald 配置片段，限制日志总占用磁盘
+func journaldDropIn() string {
+	return `[Journal]
+# 日志最大占用 50M
+SystemMaxUse=50M
+# 最多保留 7 天
+MaxRetentionSec=7day
+`
 }
 
 // installAndStartService 安装并启动服务
@@ -610,6 +659,23 @@ func installAndStartService() {
 	if err := os.WriteFile(serviceFile, []byte(serviceContent), 0644); err != nil {
 		log.Fatalf("创建服务文件失败: %v", err)
 	}
+
+	// 配置 journald 日志上限（静默，失败不影响主流程）
+	journaldDir := "/etc/systemd/journald.conf.d"
+	if err := os.MkdirAll(journaldDir, 0755); err == nil {
+		if err := os.WriteFile(journaldDir+"/stresstest.conf", []byte(journaldDropIn()), 0644); err == nil {
+			c := exec.Command("systemctl", "restart", "systemd-journald")
+			c.Stdout = nil
+			c.Stderr = nil
+			c.Run()
+		}
+	}
+
+	// 立即清理历史超限日志，回收磁盘
+	c2 := exec.Command("journalctl", "--vacuum-size=50M")
+	c2.Stdout = nil
+	c2.Stderr = nil
+	c2.Run()
 
 	// 重载 systemd（静默）
 	client := exec.Command("systemctl", "daemon-reload")
@@ -673,6 +739,13 @@ func uninstallService() {
 	if err := os.Remove(serviceFile); err != nil && !os.IsNotExist(err) {
 		log.Printf("删除服务文件失败: %v", err)
 	}
+
+	// 删除日志限制配置与锁文件
+	os.Remove("/etc/systemd/journald.conf.d/stresstest.conf")
+	if lockPath := filepath.Join(filepath.Dir(getEnvFilePath()), ".stresstest.lock"); lockPath != "" {
+		os.Remove(lockPath)
+	}
+	executeSystemCmd("systemctl", "restart", "systemd-journald")
 
 	// 重载 systemd
 	executeSystemCmd("systemctl", "daemon-reload")

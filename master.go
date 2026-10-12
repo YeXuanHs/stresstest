@@ -622,8 +622,6 @@ func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, ta
 		go icmpCleanup(ctx)
 	}
 
-	go connectionCleaner(ctx)
-
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -720,22 +718,48 @@ func connectToMaster(server *MasterServer) {
 		agentID = server.config.AgentID
 	}
 
+	// 重连策略：
+	//   - 连不上主控（dial/鉴权失败）：累计 failCount，最多 3 次后退出本进程，
+	//     交由 systemd Restart=on-failure 拉起，避免日志无限刷屏。
+	//   - 已连上后掉线（主控重启/网络抖动）：failCount 归零，正常重连。
+	const maxConnectAttempts = 3
+	const retryInterval = 3 * time.Second
+
 	for {
-		err := runAgentConnection(server, masterURL, agentID, agentName, server.config.AgentMasterToken)
-		if err != nil {
-			log.Printf("连接断开: %v，3秒后重连...", err)
+		err, connected := runAgentConnection(server, masterURL, agentID, agentName, server.config.AgentMasterToken)
+		if connected {
+			// 曾经连上过，属于正常掉线，重连不计入失败上限
+			failCount = 0
+		} else {
+			failCount++
 		}
-		time.Sleep(3 * time.Second)
+
+		if err == nil {
+			return
+		}
+
+		if failCount >= maxConnectAttempts {
+			log.Fatalf("连续 %d 次无法连接主控，退出。最后一次错误: %v", maxConnectAttempts, err)
+		}
+
+		log.Printf("连接断开: %v，%v 后重连 (%d/%d)", err, retryInterval, failCount, maxConnectAttempts)
+		time.Sleep(retryInterval)
 	}
 }
 
-func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, token string) error {
+// failCount 记录连续「连不上主控」的次数，成功连上后由 runAgentConnection 归零。
+var failCount int
+
+// runAgentConnection 建立一次到主控的 WebSocket 连接并处理指令。
+// 第二个返回值 connected 表示本次是否曾成功鉴权进入任务循环：
+// false = 根本没连上（计入重连上限）；true = 连上后掉线（正常抖动，不计入上限）。
+func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, token string) (error, bool) {
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
 
 	conn, _, err := dialer.Dial(masterURL, nil)
 	if err != nil {
-		return fmt.Errorf("连接主控失败: %v", err)
+		return fmt.Errorf("连接主控失败: %v", err), false
 	}
 	defer conn.Close()
 
@@ -746,20 +770,20 @@ func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, tok
 		Token:   token,
 	}
 	if err := conn.WriteJSON(reg); err != nil {
-		return fmt.Errorf("注册失败: %v", err)
+		return fmt.Errorf("注册失败: %v", err), false
 	}
 
 	var authResult MasterCommand
 	if err := conn.ReadJSON(&authResult); err != nil {
-		return fmt.Errorf("读取鉴权结果失败: %v", err)
+		return fmt.Errorf("读取鉴权结果失败: %v", err), false
 	}
 
 	if authResult.Type == "auth_fail" {
-		return fmt.Errorf("鉴权失败: %s", authResult.Msg)
+		return fmt.Errorf("鉴权失败: %s", authResult.Msg), false
 	}
 
 	if authResult.Type != "auth_ok" {
-		return fmt.Errorf("未知的鉴权响应: %s", authResult.Type)
+		return fmt.Errorf("未知的鉴权响应: %s", authResult.Type), false
 	}
 
 	log.Printf("已连接到主控，等待任务...")
@@ -771,7 +795,7 @@ func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, tok
 	for {
 		var cmd MasterCommand
 		if err := conn.ReadJSON(&cmd); err != nil {
-			return fmt.Errorf("读取消息失败: %v", err)
+			return fmt.Errorf("读取消息失败: %v", err), true
 		}
 
 		switch cmd.Type {
@@ -795,6 +819,11 @@ func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, tok
 			if err := json.Unmarshal(cmd.Data, &updateData); err == nil {
 				if updateData.AgentName != "" {
 					agentName = updateData.AgentName
+					// 持久化到本机 .env，使重启后名称保持一致
+					server.config.AgentName = agentName
+					if err := server.SaveEnv(); err != nil {
+						log.Printf("写入 .env 失败: %v", err)
+					}
 					log.Printf("名称已更新: %s", agentName)
 				}
 			}
@@ -871,8 +900,6 @@ func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, t
 		go icmpReceiver(ctx, rfd)
 		go icmpCleanup(ctx)
 	}
-
-	go connectionCleaner(ctx)
 
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
@@ -1116,7 +1143,8 @@ func (s *MasterServer) cliMenu() {
 		fmt.Println("    [2] 查看全部统计汇总")
 		fmt.Println("    [3] 启动任务")
 		fmt.Println("    [4] 停止任务")
-		fmt.Println("    [5] 刷新")
+		fmt.Println("    [5] 重命名 Agent")
+		fmt.Println("    [6] 刷新")
 		fmt.Println("    [0] 退出")
 		fmt.Println()
 		fmt.Print(colorBold + "  请选择 > " + colorReset)
@@ -1133,6 +1161,8 @@ func (s *MasterServer) cliMenu() {
 		case "4":
 			s.cliStopTask(reader)
 		case "5":
+			s.cliRenameAgent(reader)
+		case "6":
 			continue
 		case "0":
 			fmt.Println(colorYellow + "  正在退出..." + colorReset)
@@ -1466,6 +1496,105 @@ func (s *MasterServer) cliStopTask(reader *bufio.Reader) {
 	sent := s.stopTaskOnAgents(selectedIDs)
 	fmt.Printf(colorGreen+"  已向 %d 个 Agent 下发停止指令，按 Enter 返回..."+colorReset, sent)
 	readLine(reader)
+}
+
+// cliRenameAgent 重命名 Agent 交互流程
+func (s *MasterServer) cliRenameAgent(reader *bufio.Reader) {
+	agents := s.getSortedAgentList()
+	if len(agents) == 0 {
+		fmt.Println(colorYellow + "  暂无已连接的 Agent，按 Enter 返回..." + colorReset)
+		readLine(reader)
+		return
+	}
+
+	fmt.Println()
+	fmt.Println(colorBold + "  === 重命名 Agent ===" + colorReset)
+	fmt.Println()
+	for i, a := range agents {
+		tag := ""
+		if a.ID == "local" {
+			tag = colorCyan + " [本机]" + colorReset
+		}
+		fmt.Printf("    [%d] %s%s  (%s)\n", i+1, a.Name, tag, a.ID)
+	}
+	fmt.Println("    [0] 取消")
+	fmt.Print("  选择 > ")
+	choice := readLine(reader)
+
+	if choice == "0" || choice == "" {
+		return
+	}
+
+	idx, err := strconv.Atoi(choice)
+	if err != nil || idx < 1 || idx > len(agents) {
+		fmt.Println(colorRed + "  无效选择，按 Enter 返回..." + colorReset)
+		readLine(reader)
+		return
+	}
+
+	target := agents[idx-1]
+	fmt.Printf("  新名称: ")
+	newName := readLine(reader)
+	if newName == "" {
+		fmt.Println(colorYellow + "  名称未修改，按 Enter 返回..." + colorReset)
+		readLine(reader)
+		return
+	}
+
+	if err := s.renameAgent(target.ID, newName); err != nil {
+		fmt.Printf(colorRed+"  重命名失败: %v，按 Enter 返回..."+colorReset, err)
+	} else {
+		fmt.Printf(colorGreen+"  已重命名为: %s，按 Enter 返回..."+colorReset, newName)
+	}
+	readLine(reader)
+}
+
+// renameAgent 通知 Agent 改名并同步主控侧注册表。
+// 远程 Agent 通过 WebSocket 下发 config_update，由 Agent 写入自身 .env；
+// 本机 Agent 直接改配置并落盘。
+func (s *MasterServer) renameAgent(agentID, newName string) error {
+	if agentID == "local" {
+		s.agentsMu.Lock()
+		if a, ok := s.agents["local"]; ok {
+			a.Name = newName
+		}
+		s.agentsMu.Unlock()
+		s.config.AgentName = newName
+		return s.SaveEnv()
+	}
+
+	s.agentsMu.RLock()
+	agent, ok := s.agents[agentID]
+	var conn *websocket.Conn
+	if ok {
+		conn = agent.Conn
+	}
+	s.agentsMu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("Agent %s 当前离线，无法下发改名指令", agentID)
+	}
+
+	msg := MasterCommand{
+		Type: "config_update",
+		Data: mustMarshal(ConfigUpdateData{AgentName: newName}),
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		return fmt.Errorf("下发改名指令失败: %v", err)
+	}
+
+	s.agentsMu.Lock()
+	if a, ok := s.agents[agentID]; ok {
+		a.Name = newName
+	}
+	s.agentsMu.Unlock()
+
+	if reg, exists := s.config.RegisteredAgents[agentID]; exists {
+		reg.Name = newName
+		s.config.RegisteredAgents[agentID] = reg
+		return s.SaveEnv()
+	}
+	return nil
 }
 
 // ============================================================
