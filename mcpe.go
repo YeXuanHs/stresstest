@@ -32,6 +32,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sync"
@@ -314,7 +315,8 @@ func appendRaknetAddress(dst []byte, ipStr string, port uint16) []byte {
 	} else {
 		// 无效 IP，退化为 0.0.0.0
 		binary.LittleEndian.PutUint16(v[:], 4)
-		dst = append(dst, v[:], 0, 0, 0, 0)
+		dst = append(dst, v[:]...)
+		dst = append(dst, 0, 0, 0, 0)
 	}
 	var pv [2]byte
 	binary.BigEndian.PutUint16(pv[:], p)
@@ -413,7 +415,7 @@ func mcpeFetchServerGUID(target string, clientGUID []byte, timeout time.Duration
 	if len(resp) < 28 {
 		return 0, "", errors.New("UnconnectedPong 长度不足")
 	}
-	guid := raknetLE(resp[4:12])
+	guid := uint64(raknetLE(resp[4:12]))
 	motd, _, _ := raknetReadString(resp[28:])
 	atomic.AddInt64(&mcpeHandshakes, 1)
 	return guid, motd, nil
@@ -610,7 +612,6 @@ func mcpeSendPlay(s *mcpeSession, payload []byte) error {
 
 func mcpeRecvPlay(s *mcpeSession, timeout time.Duration) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
-	buf := make([]byte, 4096)
 
 	for time.Now().Before(deadline) {
 		remain := deadline.Sub(time.Now())
@@ -802,7 +803,7 @@ func mcpeWorker(ctx context.Context, wg *sync.WaitGroup, id int) {
 
 	clientGUID := mcpeClientGUID()
 	serverPubKey := loadServerPublicKey(*mcpeKeyFile)
-	username := fmt.Sprintf("%s%d", *mcpeUsernamePrefix, id)
+	username := fmt.Sprintf("%s%d", *mcUsernamePrefix, id)
 
 	for {
 		select {
@@ -831,7 +832,7 @@ func mcpeWorker(ctx context.Context, wg *sync.WaitGroup, id int) {
 			}
 		}
 
-		if !*mcpeReconnect {
+		if !*mcReconnect {
 			return
 		}
 		select {

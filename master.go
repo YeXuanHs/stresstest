@@ -565,7 +565,7 @@ func (s *MasterServer) stopLocalTask() {
 }
 
 // runLocalTask 本地 Agent 执行任务
-func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string, mcAction string, mcProtocol int) {
+func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string, mcAct string, mcProto int) {
 	log.Printf("本地任务启动: mode=%s target=%s workers=%d size=%d", taskMode, taskTarget, taskWorkers, taskSize)
 	startTime := time.Now()
 
@@ -579,20 +579,20 @@ func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, ta
 	*payloadSize = taskSize
 
 	// 应用 Minecraft 子动作/协议号
-	if mcAction != "" {
+	if mcAct != "" {
 		switch taskMode {
 		case "mc":
-			*mcAction = mcAction
+			*mcAction = mcAct
 		case "mcpe":
-			*mcpeAction = mcAction
+			*mcpeAction = mcAct
 		}
 	}
-	if mcProtocol > 0 {
+	if mcProto > 0 {
 		switch taskMode {
 		case "mc":
-			*mcProtocol = mcProtocol
+			*mcProtocol = mcProto
 		case "mcpe":
-			*mcpeProtocol = mcProtocol
+			*mcpeProtocol = mcProto
 		}
 	}
 
@@ -865,7 +865,7 @@ func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, tok
 }
 
 // runRemoteTask 远程 Agent 执行任务
-func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string, conn *websocket.Conn, agentID string, mcAction string, mcProtocol int) {
+func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string, conn *websocket.Conn, agentID string, mcAct string, mcProto int) {
 	log.Printf("开始执行任务: mode=%s target=%s workers=%d size=%d", taskMode, taskTarget, taskWorkers, taskSize)
 
 	atomic.StoreInt64(&totalBytes, 0)
@@ -878,20 +878,20 @@ func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, t
 	*payloadSize = taskSize
 
 	// 应用主控下发的 Minecraft 子动作/协议号
-	if mcAction != "" {
+	if mcAct != "" {
 		switch taskMode {
 		case "mc":
-			*mcAction = mcAction
+			*mcAction = mcAct
 		case "mcpe":
-			*mcpeAction = mcAction
+			*mcpeAction = mcAct
 		}
 	}
-	if mcProtocol > 0 {
+	if mcProto > 0 {
 		switch taskMode {
 		case "mc":
-			*mcProtocol = mcProtocol
+			*mcProtocol = mcProto
 		case "mcpe":
-			*mcpeProtocol = mcProtocol
+			*mcpeProtocol = mcProto
 		}
 	}
 
