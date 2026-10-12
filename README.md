@@ -1,14 +1,14 @@
 # stresstest 多协议压力测试工具
 
-支持 TCP / UDP / HTTP / Minecraft / Flood / ICMP 的高并发压测工具，支持分布式多机压测。
+支持 TCP / UDP / HTTP / Minecraft（Java 版 / 基岩版）/ Flood / ICMP 的高并发压测工具，支持分布式多机压测。
 
 ## 功能特性
 
-- 多协议支持：TCP / UDP / HTTP / Minecraft / Flood / ICMP
+- 多协议支持：TCP / UDP / HTTP / MC(Java) / MCPE(基岩版) / Flood / ICMP
 - 分布式架构：主控 + 被控模式，支持多机同时发压
-- CLI 交互菜单：实时监控、任务下发、停止控制
-- 实时统计：500ms 刷新间隔，查看吞吐、包速率、错误数
-- 密码保护：Agent 连接需密码验证
+- CLI 交互菜单：实时监控、任务下发、停止控制、远程改名
+- 单实例锁：重复执行不会产生多个进程
+- 日志限容：重连失败上限 3 次，systemd 日志限速 + 50M 磁盘上限
 
 ## 架构说明
 
@@ -124,7 +124,7 @@ go build -o stresstest .
 | `-icmp-rate-pps` | 限速 pps，0不限速 | 0 |
 | `-icmp-timeout` | Reply超时 | 2s |
 
-### Minecraft 模式参数
+### Minecraft Java 版模式参数（mode=mc）
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
@@ -133,6 +133,30 @@ go build -o stresstest .
 | `-mc-username-prefix` | 用户名前缀 | stress |
 | `-mc-keepalive` | 是否保活 | true |
 | `-mc-reconnect` | 断线重连 | true |
+
+### Minecraft 基岩版模式参数（mode=mcpe）
+
+基岩版走 **UDP/RakNet** + **MCPE encryption**，与 Java 版协议栈完全不同，
+不走 TCP+AES-CFB8 这条路。
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `-mcpe-action` | login（登录挂机） / status（仅查服） | login |
+| `-mcpe-protocol` | 协议版本号（1.21.4≈776） | 776 |
+| `-mcpe-server-address` | RakNet 握手用地址，默认取 target 的 host | 空 |
+| `-mcpe-key-file` | 服务端公钥文件（前 32 字节） | `/tmp/MCRaFT_PE/keys.dat` |
+| `-mcpe-keepalive` | 是否响应 KeepAlive/Ping | true |
+
+```bash
+# 基岩版查服
+./stresstest -mode mcpe -mcpe-action status -target 1.2.3.4:19132 -workers 50
+
+# 基岩版登录挂机
+./stresstest -mode mcpe -mcpe-action login -target 1.2.3.4:19132 -workers 200
+```
+
+> 基岩版加密握手需要服务端公钥。未提供 `-mcpe-key-file` 时会自动降级为**未加密**会话，
+> 此时能否登录取决于目标服务器是否强制加密。
 
 ## 分布式压测
 
