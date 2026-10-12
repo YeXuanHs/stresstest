@@ -49,7 +49,7 @@ import (
 )
 
 var (
-	mode        = flag.String("mode", "tcp", "压测模式: tcp | udp | http | mc | flood | icmp")
+	mode        = flag.String("mode", "tcp", "压测模式: tcp | udp | http | mc | mcpe | flood | icmp")
 	target      = flag.String("target", "", "目标地址。tcp/udp/mc 形如 host:port，http 形如 http://host:port/path")
 	workers     = flag.Int("workers", runtime.NumCPU()*4, "并发worker数（每个worker独立连接/goroutine）")
 	payloadSize = flag.Int("size", 65536, "每次发送的payload大小（字节，仅tcp/udp/http模式用）")
@@ -317,6 +317,24 @@ func statsReporter(ctx context.Context) {
 				continue
 			}
 
+			if *mode == "mcpe" {
+				active := atomic.LoadInt64(&mcpeActiveConns)
+				okLogin := atomic.LoadInt64(&mcpeLoginOK)
+				failLogin := atomic.LoadInt64(&mcpeLoginFailed)
+				ka := atomic.LoadInt64(&mcpeKeepAlives)
+				statusOK := atomic.LoadInt64(&mcpeStatusOK)
+				hs := atomic.LoadInt64(&mcpeHandshakes)
+				encSess := atomic.LoadInt64(&mcpeEncryptedSess)
+				if *mcpeAction == "status" {
+					fmt.Printf("[%s] 基岩版查询成功: %d | RakNet握手: %d | 加密会话: %d | 累计错误: %d\n",
+						now.Format("15:04:05"), statusOK, hs, encSess, e)
+				} else {
+					fmt.Printf("[%s] 基岩版挂机连接: %d | 登录成功: %d | 登录失败: %d | KeepAlive响应: %d | 加密会话: %d | 错误: %d\n",
+						now.Format("15:04:05"), active, okLogin, failLogin, ka, encSess, e)
+				}
+				continue
+			}
+
 			if *mode == "mc" {
 				active := atomic.LoadInt64(&mcActiveConns)
 				okLogin := atomic.LoadInt64(&mcLoginOK)
@@ -528,6 +546,8 @@ func runCommandLine() {
 			go httpWorker(ctx, &wg, i, lim)
 		case "mc":
 			go mcWorker(ctx, &wg, i)
+		case "mcpe":
+			go mcpeWorker(ctx, &wg, i)
 		case "flood":
 			if *floodProto == "udp" {
 				if !*floodChurn && *floodBatch > 1 {
